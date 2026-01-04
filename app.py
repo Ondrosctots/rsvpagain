@@ -41,6 +41,24 @@ def extract_conversation_id(c):
              .split("/")[-1]
     )
 
+def extract_listing_title(c):
+    """
+    Safely extract listing title from any Reverb conversation shape
+    """
+    listing = c.get("listing")
+
+    if isinstance(listing, dict):
+        return listing.get("title", "General conversation")
+
+    # Sometimes listing info is under embedded data
+    embedded = c.get("_embedded", {})
+    if isinstance(embedded, dict):
+        listing_embedded = embedded.get("listing")
+        if isinstance(listing_embedded, dict):
+            return listing_embedded.get("title", "General conversation")
+
+    return "General conversation"
+
 def get_all_conversations(unread_only=False):
     url = f"{API_BASE}/my/conversations"
     params = {"unread_only": "true"} if unread_only else {}
@@ -70,7 +88,7 @@ def send_reply(conv_id, body):
     )
     return r.status_code in [200, 201]
 
-# ---------------- SIDEBAR CONTROLS ----------------
+# ---------------- SIDEBAR ----------------
 st.sidebar.header("⚙️ Inbox Settings")
 
 unread_only = st.sidebar.checkbox("Show unread only", value=False)
@@ -87,7 +105,7 @@ if st.button("📥 Load Conversations"):
 
 conversations = st.session_state.get("conversations", [])
 
-# ---------------- DISPLAY CONVERSATION LIST ----------------
+# ---------------- DISPLAY CONVERSATIONS ----------------
 if conversations:
     st.subheader("📂 Conversations")
 
@@ -101,12 +119,9 @@ if conversations:
         sender = c.get("last_message_sender_name", "Unknown sender")
         preview = c.get("last_message_preview", "")
         unread = "🔔" if c.get("unread", False) else ""
-        listing = (
-            c.get("listing", {})
-             .get("title", "General conversation")
-        )
+        listing_title = extract_listing_title(c)
 
-        label = f"{unread} {sender} — {listing}\n{preview}"
+        label = f"{unread} {sender} — {listing_title}\n{preview}"
 
         if search_query.lower() in label.lower():
             conv_map[label] = conv_id
@@ -155,15 +170,7 @@ if conversations:
         placeholder="Type your message here..."
     )
 
-    col1, col2 = st.columns([1, 3])
-
-    with col1:
-        send = st.button("Send Reply")
-
-    with col2:
-        st.caption("Tip: Keep replies professional and concise.")
-
-    if send:
+    if st.button("Send Reply"):
         if not reply_text.strip():
             st.warning("Reply cannot be empty.")
         else:
