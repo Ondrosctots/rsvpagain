@@ -2,81 +2,51 @@ import streamlit as st
 import requests
 import time
 
-# ---------------- CONFIG ----------------
 API_BASE = "https://api.reverb.com/api"
 
-st.set_page_config(
-    page_title="Reverb Messages Inbox",
-    layout="wide"
-)
+st.set_page_config(page_title="Reverb Inbox", layout="wide")
+st.title("📬 Reverb Messages")
 
-st.title("📬 Reverb Messages Inbox")
-
-# ---------------- TOKEN INPUT ----------------
+# ---------------- TOKEN ----------------
 api_token = st.text_input(
     "Enter your Reverb API Token",
-    type="password",
-    help="Required every session. Token is never saved."
+    type="password"
 )
 
 if not api_token:
-    st.info("Please enter your API token to continue.")
     st.stop()
 
 headers = {
     "Authorization": f"Bearer {api_token}",
     "Accept": "application/hal+json",
-    "Content-Type": "application/hal+json",
     "Accept-Version": "3.0"
 }
 
-# ---------------- API HELPERS ----------------
+# ---------------- HELPERS ----------------
+def get_conversations(unread_only=False):
+    params = {"unread_only": "true"} if unread_only else {}
+    r = requests.get(f"{API_BASE}/my/conversations", headers=headers, params=params)
+    if r.status_code != 200:
+        st.error("Failed to load conversations")
+        return []
+    return r.json().get("conversations", [])
+
 def extract_conversation_id(c):
     return (
         c.get("id")
         or c.get("conversation_id")
-        or c.get("_links", {})
-             .get("self", {})
-             .get("href", "")
-             .split("/")[-1]
+        or c.get("_links", {}).get("self", {}).get("href", "").split("/")[-1]
     )
 
-def extract_listing_title(c):
-    """
-    Safely extract listing title from any Reverb conversation shape
-    """
-    listing = c.get("listing")
-
-    if isinstance(listing, dict):
-        return listing.get("title", "General conversation")
-
-    # Sometimes listing info is under embedded data
-    embedded = c.get("_embedded", {})
-    if isinstance(embedded, dict):
-        listing_embedded = embedded.get("listing")
-        if isinstance(listing_embedded, dict):
-            return listing_embedded.get("title", "General conversation")
-
-    return "General conversation"
-
-def get_all_conversations(unread_only=False):
-    url = f"{API_BASE}/my/conversations"
-    params = {"unread_only": "true"} if unread_only else {}
-
-    r = requests.get(url, headers=headers, params=params)
-    if r.status_code != 200:
-        st.error("Failed to load conversations.")
-        return []
-
-    return r.json().get("conversations", [])
+def get_last_message(c):
+    messages = c.get("messages")
+    if isinstance(messages, list) and messages:
+        return messages[-1]
+    return None
 
 def get_conversation(conv_id):
-    r = requests.get(
-        f"{API_BASE}/my/conversations/{conv_id}",
-        headers=headers
-    )
+    r = requests.get(f"{API_BASE}/my/conversations/{conv_id}", headers=headers)
     if r.status_code != 200:
-        st.error("Failed to load conversation.")
         return {}
     return r.json()
 
@@ -86,98 +56,89 @@ def send_reply(conv_id, body):
         headers=headers,
         json={"body": body}
     )
-    return r.status_code in [200, 201]
+    return r.status_code in (200, 201)
 
 # ---------------- SIDEBAR ----------------
-st.sidebar.header("⚙️ Inbox Settings")
+st.sidebar.header("Inbox")
+unread_only = st.sidebar.checkbox("Unread only")
+search = st.sidebar.text_input("Search messages")
 
-unread_only = st.sidebar.checkbox("Show unread only", value=False)
-auto_refresh = st.sidebar.checkbox("Auto refresh (30s)", value=False)
-search_query = st.sidebar.text_input("Search conversations")
-
-if auto_refresh:
-    time.sleep(30)
-    st.experimental_rerun()
-
-# ---------------- LOAD CONVERSATIONS ----------------
-if st.button("📥 Load Conversations"):
-    st.session_state["conversations"] = get_all_conversations(unread_only)
+# ---------------- LOAD ----------------
+if st.button("Load Inbox"):
+    st.session_state["conversations"] = get_conversations(unread_only)
 
 conversations = st.session_state.get("conversations", [])
 
-# ---------------- DISPLAY CONVERSATIONS ----------------
+# ---------------- INBOX LIST ----------------
 if conversations:
-    st.subheader("📂 Conversations")
+    st.subheader("Conversations")
 
-    conv_map = {}
+    inbox = []
 
     for c in conversations:
         conv_id = extract_conversation_id(c)
         if not conv_id:
             continue
 
-        sender = c.get("last_message_sender_name", "Unknown sender")
-        preview = c.get("last_message_preview", "")
-        unread = "🔔" if c.get("unread", False) else ""
-        listing_title = extract_listing_title(c)
+        last_msg = get_last_message(c)
+        sender = last_msg.get("sender_name", "Unknown") if last_msg else "Unknown"
+        preview = last_msg.get("body", "")[:120] if last_msg else ""
+        created = last_msg.get("created_at", "")
+        unread = c.get("unread", False)
 
-        label = f"{unread} {sender} — {listing_title}\n{preview}"
+        listing_title = "General conversation"
+        listing = c.get("listing")
+        if isinstance(listing, dict):
+            listing_title = listing.get("title", listing_title)
 
-        if search_query.lower() in label.lower():
-            conv_map[label] = conv_id
+        label = (
+            f"{'🔵' if unread else '⚪'} "
+            f"{sender} — {preview}\n"
+            f"{listing_title} • {created}"
+        )
 
-    if not conv_map:
-        st.warning("No conversations match your filters.")
+        if search.lower() in label.lower():
+            inbox.append((label, conv_id))
+
+    if not inbox:
+        st.info("No conversations found.")
         st.stop()
 
     selected_label = st.selectbox(
-        "Select a conversation",
-        options=list(conv_map.keys())
+        "Inbox",
+        options=[x[0] for x in inbox]
     )
 
-    selected_conv_id = conv_map[selected_label]
+    selected_conv_id = dict(inbox)[selected_label]
 
-    # ---------------- LOAD MESSAGES ----------------
-    data = get_conversation(selected_conv_id)
-    messages = data.get("messages", [])
+    # ---------------- THREAD ----------------
+    thread = get_conversation(selected_conv_id)
+    messages = thread.get("messages", [])
 
     st.divider()
-    st.subheader("💬 Messages")
+    st.subheader("Conversation")
 
-    if not messages:
-        st.info("No messages yet.")
-    else:
-        for msg in messages:
-            sender = msg.get("sender_name", "Unknown")
-            body = msg.get("body", "")
-            created = msg.get("created_at", "")
-
-            st.markdown(
-                f"""
-                **{sender}**  
-                {body}  
-                🕒 {created}
-                """
-            )
-            st.markdown("---")
+    for m in messages:
+        st.markdown(
+            f"""
+            **{m.get('sender_name', 'Unknown')}**  
+            {m.get('body', '')}  
+            🕒 {m.get('created_at', '')}
+            """
+        )
+        st.markdown("---")
 
     # ---------------- REPLY ----------------
-    st.subheader("✉️ Reply")
+    reply = st.text_area("Reply")
 
-    reply_text = st.text_area(
-        "Write your reply",
-        height=120,
-        placeholder="Type your message here..."
-    )
-
-    if st.button("Send Reply"):
-        if not reply_text.strip():
-            st.warning("Reply cannot be empty.")
-        else:
-            if send_reply(selected_conv_id, reply_text):
-                st.success("Message sent successfully.")
+    if st.button("Send"):
+        if reply.strip():
+            if send_reply(selected_conv_id, reply):
+                st.success("Message sent")
             else:
-                st.error("Failed to send message.")
+                st.error("Failed to send")
+        else:
+            st.warning("Message cannot be empty")
 
 else:
-    st.info("Click **Load Conversations** to fetch your inbox.")
+    st.info("Click **Load Inbox** to fetch messages.")
