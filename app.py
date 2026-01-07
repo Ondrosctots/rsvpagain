@@ -1,18 +1,13 @@
 import streamlit as st
 import requests
 
-# ---------------- CONFIG ----------------
 API_BASE = "https://api.reverb.com/api"
 
 st.set_page_config(page_title="Reverb Messages", layout="wide")
 st.title("📬 Reverb Messages")
 
 # ---------------- TOKEN ----------------
-api_token = st.text_input(
-    "Enter your Reverb API Token",
-    type="password"
-)
-
+api_token = st.text_input("Enter your Reverb API Token", type="password")
 if not api_token:
     st.stop()
 
@@ -22,19 +17,16 @@ headers = {
     "Accept-Version": "3.0"
 }
 
-# ---------------- API HELPERS ----------------
+# ---------------- API ----------------
 def get_conversations(unread_only=False):
     params = {"unread_only": "true"} if unread_only else {}
     r = requests.get(f"{API_BASE}/my/conversations", headers=headers, params=params)
     if r.status_code != 200:
         st.error("Failed to load conversations")
         return []
-    data = r.json()
-    return data.get("conversations", [])
+    return r.json().get("conversations", [])
 
 def extract_conversation_id(c):
-    if not isinstance(c, dict):
-        return None
     return (
         c.get("id")
         or c.get("conversation_id")
@@ -48,20 +40,20 @@ def extract_listing_title(c):
     listing = c.get("listing")
     if isinstance(listing, dict):
         return listing.get("title", "General conversation")
-    embedded = c.get("_embedded")
-    if isinstance(embedded, dict):
-        listing2 = embedded.get("listing")
-        if isinstance(listing2, dict):
-            return listing2.get("title", "General conversation")
     return "General conversation"
 
-def get_last_message(c):
-    messages = c.get("messages")
-    if isinstance(messages, list) and messages:
-        last = messages[-1]
-        if isinstance(last, dict):
-            return last
-    return {}
+def get_last_message_preview(c):
+    # Reverb provides preview fields safely here
+    return (
+        c.get("last_message_preview")
+        or ""
+    )
+
+def get_last_sender(c):
+    return (
+        c.get("last_message_sender_name")
+        or "Unknown sender"
+    )
 
 def get_conversation(conv_id):
     r = requests.get(f"{API_BASE}/my/conversations/{conv_id}", headers=headers)
@@ -92,7 +84,8 @@ conversations = st.session_state.get("conversations", [])
 if conversations:
     st.subheader("Conversations")
 
-    inbox = []
+    options = []
+    conv_lookup = {}
 
     for c in conversations:
         if not isinstance(c, dict):
@@ -102,37 +95,35 @@ if conversations:
         if not conv_id:
             continue
 
-        last_msg = get_last_message(c)
+        sender = get_last_sender(c)
+        preview = get_last_message_preview(c)[:120]
+        listing = extract_listing_title(c)
+        unread = c.get("unread", False)
 
-        sender = last_msg.get("sender_name") or "Unknown sender"
-        preview = (last_msg.get("body") or "")[:120]
-        created = last_msg.get("created_at") or ""
-        unread = bool(c.get("unread", False))
-        listing_title = extract_listing_title(c)
-
-        label = (
+        display_label = (
             f"{'🔵' if unread else '⚪'} "
             f"{sender} — {preview}\n"
-            f"{listing_title} • {created}"
+            f"{listing}"
         )
 
-        if search.lower() in label.lower():
-            inbox.append((label, conv_id))
+        # 👇 THIS IS THE CRITICAL FIX
+        unique_key = f"[{conv_id}] {display_label}"
 
-    if not inbox:
+        if search.lower() in unique_key.lower():
+            options.append(unique_key)
+            conv_lookup[unique_key] = conv_id
+
+    if not options:
         st.info("No conversations found.")
         st.stop()
 
-    selected_label = st.selectbox(
-        "Inbox",
-        options=[item[0] for item in inbox]
-    )
+    selected = st.selectbox("Inbox", options=options)
 
-    selected_conv_id = dict(inbox)[selected_label]
+    selected_conv_id = conv_lookup[selected]
 
     # ---------------- THREAD ----------------
     thread = get_conversation(selected_conv_id)
-    messages = thread.get("messages")
+    messages = thread.get("messages", [])
 
     st.divider()
     st.subheader("Conversation")
