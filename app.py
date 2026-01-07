@@ -17,7 +17,7 @@ headers = {
     "Accept-Version": "3.0"
 }
 
-# ---------------- API ----------------
+# ---------------- API HELPERS ----------------
 def get_conversations(unread_only=False):
     params = {"unread_only": "true"} if unread_only else {}
     r = requests.get(f"{API_BASE}/my/conversations", headers=headers, params=params)
@@ -42,18 +42,29 @@ def extract_listing_title(c):
         return listing.get("title", "General conversation")
     return "General conversation"
 
-def get_last_message_preview(c):
-    # Reverb provides preview fields safely here
-    return (
-        c.get("last_message_preview")
-        or ""
-    )
+def extract_sender_name(c):
+    # 1️⃣ Best case
+    if c.get("last_message_sender_name"):
+        return c["last_message_sender_name"]
 
-def get_last_sender(c):
-    return (
-        c.get("last_message_sender_name")
-        or "Unknown sender"
-    )
+    # 2️⃣ Reverb-standard: other participant
+    other = c.get("other_user")
+    if isinstance(other, dict):
+        return other.get("username", "Unknown user")
+
+    # 3️⃣ Fallbacks
+    buyer = c.get("buyer")
+    if isinstance(buyer, dict):
+        return buyer.get("username", "Unknown user")
+
+    seller = c.get("seller")
+    if isinstance(seller, dict):
+        return seller.get("username", "Unknown user")
+
+    return "Unknown user"
+
+def get_last_message_preview(c):
+    return c.get("last_message_preview") or ""
 
 def get_conversation(conv_id):
     r = requests.get(f"{API_BASE}/my/conversations/{conv_id}", headers=headers)
@@ -95,30 +106,28 @@ if conversations:
         if not conv_id:
             continue
 
-        sender = get_last_sender(c)
+        sender = extract_sender_name(c)
         preview = get_last_message_preview(c)[:120]
         listing = extract_listing_title(c)
         unread = c.get("unread", False)
 
-        display_label = (
+        display = (
             f"{'🔵' if unread else '⚪'} "
             f"{sender} — {preview}\n"
             f"{listing}"
         )
 
-        # 👇 THIS IS THE CRITICAL FIX
-        unique_key = f"[{conv_id}] {display_label}"
+        unique_option = f"[{conv_id}] {display}"
 
-        if search.lower() in unique_key.lower():
-            options.append(unique_key)
-            conv_lookup[unique_key] = conv_id
+        if search.lower() in unique_option.lower():
+            options.append(unique_option)
+            conv_lookup[unique_option] = conv_id
 
     if not options:
         st.info("No conversations found.")
         st.stop()
 
     selected = st.selectbox("Inbox", options=options)
-
     selected_conv_id = conv_lookup[selected]
 
     # ---------------- THREAD ----------------
