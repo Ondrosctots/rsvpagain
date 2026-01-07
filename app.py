@@ -31,10 +31,12 @@ def get_headers(token: str) -> Dict[str, str]:
     }
 
 def validate_token(token: str) -> bool:
-    if not token or not token.startswith("Bearer "):
+    if not token.strip():
         return False
     try:
-        r = requests.get(f"{API_BASE}/my/account", headers=get_headers(token), timeout=10)
+        # Test with a lightweight API call (e.g., fetch one conversation)
+        headers = get_headers(token)
+        r = requests.get(f"{API_BASE}/my/conversations?per_page=1", headers=headers, timeout=10)
         return r.ok
     except:
         return False
