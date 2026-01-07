@@ -6,17 +6,18 @@ API = "https://api.reverb.com/api"
 
 st.set_page_config(page_title="Reverb Inbox", layout="wide")
 
-# ---------- SESSION FLAGS ----------
+# ---------------- SESSION STATE ----------------
 if "sending" not in st.session_state:
     st.session_state.sending = False
-if "last_seen" not in st.session_state:
-    st.session_state.last_seen = {}
 
-# ---------- AUTO REFRESH ----------
+if "last_seen_msg" not in st.session_state:
+    st.session_state.last_seen_msg = {}
+
+# ---------------- AUTO REFRESH ----------------
 if not st.session_state.sending:
-    st_autorefresh(interval=2000, key="refresh")  # safer than 1s
+    st_autorefresh(interval=2000, key="reverb_refresh")
 
-# ---------- UI ----------
+# ---------------- UI ----------------
 st.title("📬 Reverb Messages")
 
 token = st.text_input("Reverb API Token", type="password")
@@ -29,57 +30,102 @@ HEADERS = {
     "Accept-Version": "3.0"
 }
 
-# ---------- API ----------
+# ---------------- HELPERS ----------------
+def extract_conversation_id(c):
+    if c.get("id"):
+        return c["id"]
+    if c.get("conversation_id"):
+        return c["conversation_id"]
+    href = c.get("_links", {}).get("self", {}).get("href")
+    if href:
+        return href.split("/")[-1]
+    return None
+
 def get_conversations():
     r = requests.get(f"{API}/my/conversations", headers=HEADERS)
-    return r.json().get("conversations", []) if r.ok else []
+    if not r.ok:
+        return []
+    return r.json().get("conversations", [])
 
-def get_thread(cid):
+def get_conversation(cid):
     r = requests.get(f"{API}/my/conversations/{cid}", headers=HEADERS)
     return r.json() if r.ok else {}
 
 def send_message(cid, body):
-    return requests.post(
+    r = requests.post(
         f"{API}/my/conversations/{cid}/messages",
         headers=HEADERS,
         json={"body": body}
-    ).ok
+    )
+    return r.ok
 
 def get_notifications():
     r = requests.get(f"{API}/my/notifications", headers=HEADERS)
     return r.json().get("notifications", []) if r.ok else []
 
-# ---------- SIDEBAR ----------
+def get_sender_name(c):
+    if c.get("last_message_sender_name"):
+        return c["last_message_sender_name"]
+    other = c.get("other_user")
+    if isinstance(other, dict):
+        return other.get("username", "Unknown")
+    return "Unknown"
+
+# ---------------- SIDEBAR (NOTIFICATIONS) ----------------
 st.sidebar.header("🔔 Notifications")
 
 for n in get_notifications():
     st.sidebar.info(f"{n.get('type', '').upper()}: {n.get('message', '')}")
 
-# ---------- INBOX ----------
+# ---------------- INBOX ----------------
 convs = get_conversations()
 if not convs:
-    st.info("No conversations")
+    st.info("No conversations found.")
     st.stop()
 
 labels = {}
 for c in convs:
-    cid = c["id"]
-    user = c.get("other_user", {}).get("username", "Unknown")
-    title = c.get("listing", {}).get("title", "General")
-    unread = "🔵" if c.get("unread") else "⚪"
-    labels[f"{unread} {user} — {title}"] = cid
+    if not isinstance(c, dict):
+        continue
 
-selected = st.selectbox("Inbox", labels.keys())
+    cid = extract_conversation_id(c)
+    if not cid:
+        continue  # skip broken objects safely
+
+    sender = get_sender_name(c)
+    listing = c.get("listing", {}).get("title", "General")
+    unread = "🔵" if c.get("unread") else "⚪"
+    preview = (c.get("last_message_preview") or "")[:80]
+
+    label = f"{unread} {sender} — {preview}\n{listing}"
+    labels[label] = cid
+
+if not labels:
+    st.warning("No usable conversations.")
+    st.stop()
+
+# Preserve selection
+if "selected" not in st.session_state:
+    st.session_state.selected = list(labels.keys())[0]
+
+selected = st.selectbox(
+    "Inbox",
+    labels.keys(),
+    index=list(labels.keys()).index(st.session_state.selected)
+    if st.session_state.selected in labels else 0
+)
+
+st.session_state.selected = selected
 cid = labels[selected]
 
-# ---------- THREAD ----------
-thread = get_thread(cid)
+# ---------------- THREAD ----------------
+thread = get_conversation(cid)
 messages = thread.get("messages", [])
 
-# ---------- NEW MESSAGE SOUND ----------
-last_id = messages[-1]["id"] if messages else None
-if st.session_state.last_seen.get(cid) != last_id:
-    st.session_state.last_seen[cid] = last_id
+# ---------------- NEW MESSAGE SOUND ----------------
+last_msg_id = messages[-1]["id"] if messages else None
+if st.session_state.last_seen_msg.get(cid) != last_msg_id:
+    st.session_state.last_seen_msg[cid] = last_msg_id
     st.markdown(
         """
         <audio autoplay>
@@ -89,19 +135,19 @@ if st.session_state.last_seen.get(cid) != last_id:
         unsafe_allow_html=True
     )
 
-# ---------- LISTING IMAGE ----------
+# ---------------- LISTING IMAGE ----------------
 listing = thread.get("listing", {})
 photos = listing.get("photos", [])
 if photos:
-    st.image(photos[0]["_links"]["full"]["href"], width=200)
+    st.image(photos[0]["_links"]["full"]["href"], width=220)
 
-# ---------- ORDER / OFFER BADGE ----------
+# ---------------- BADGES ----------------
 if thread.get("order_id"):
     st.success("📦 Order conversation")
 if thread.get("offer"):
     st.warning("💰 Offer conversation")
 
-# ---------- MESSAGES ----------
+# ---------------- MESSAGES ----------------
 st.divider()
 for m in messages:
     st.markdown(
@@ -113,10 +159,7 @@ for m in messages:
     )
     st.markdown("---")
 
-# ---------- TYPING INDICATOR ----------
-st.caption("🟢 User may be typing..." if messages else "")
-
-# ---------- REPLY ----------
+# ---------------- REPLY ----------------
 reply = st.text_area("Reply", key="reply")
 
 if st.button("Send", disabled=st.session_state.sending):
@@ -124,7 +167,9 @@ if st.button("Send", disabled=st.session_state.sending):
         st.session_state.sending = True
         if send_message(cid, reply):
             st.session_state.reply = ""
-            st.success("Sent")
+            st.success("Message sent")
         else:
-            st.error("Failed")
+            st.error("Failed to send")
         st.session_state.sending = False
+    else:
+        st.warning("Message cannot be empty")
