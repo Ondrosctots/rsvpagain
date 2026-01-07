@@ -17,6 +17,8 @@ if "sending" not in st.session_state:
     st.session_state.sending = False
 if "last_refresh" not in st.session_state:
     st.session_state.last_refresh = 0
+if "reply_text" not in st.session_state:
+    st.session_state.reply_text = ""
 
 # ---------------- AUTO REFRESH ----------------
 if st.session_state.auto_refresh and not st.session_state.sending:
@@ -201,13 +203,13 @@ with tab_inbox:
             
             col1, col2 = st.columns([3, 1])
             with col1:
-                reply = st.text_area("Reply", key="reply")
+                reply = st.text_area("Reply", value=st.session_state.reply_text, key="reply")
             with col2:
                 if st.button("Send", disabled=st.session_state.sending):
                     if reply.strip():
                         st.session_state.sending = True
                         if send_message(token, cid, reply):
-                            st.session_state.reply = ""
+                            st.session_state.reply_text = ""
                             st.success("Message sent!")
                             st.cache_data.clear()
                         else:
