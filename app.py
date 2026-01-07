@@ -12,7 +12,10 @@ if "sending" not in st.session_state:
     st.session_state.sending = False
 
 if "last_seen_msg" not in st.session_state:
-    st.session_state.last_seen_msg = {}
+    st.session_state.last_seen_msg = {}  # per conversation
+
+if "alerted_fp" not in st.session_state:
+    st.session_state.alerted_fp = set()  # global dedup
 
 # ---------------- AUTO REFRESH ----------------
 if not st.session_state.sending:
@@ -78,8 +81,9 @@ def message_fingerprint(m):
     )
     return hashlib.md5(base.encode()).hexdigest()
 
-# ---------------- SIDEBAR ----------------
+# ---------------- SIDEBAR (NOTIFICATIONS) ----------------
 st.sidebar.header("🔔 Notifications")
+
 for n in get_notifications():
     st.sidebar.info(f"{n.get('type', '').upper()}: {n.get('message', '')}")
 
@@ -89,7 +93,9 @@ if not convs:
     st.info("No conversations found.")
     st.stop()
 
-labels = {}
+options = []
+conv_lookup = {}
+
 for c in convs:
     if not isinstance(c, dict):
         continue
@@ -103,35 +109,41 @@ for c in convs:
     unread = "🔵" if c.get("unread") else "⚪"
     preview = (c.get("last_message_preview") or "")[:80]
 
-    labels[f"{unread} {sender} — {preview}\n{listing}"] = cid
+    # UNIQUE LABEL (fixes collapsing issue)
+    label = f"[{cid}] {unread} {sender} — {preview}\n{listing}"
 
-if not labels:
-    st.warning("No usable conversations.")
-    st.stop()
+    options.append(label)
+    conv_lookup[label] = cid
 
 # Preserve selection
 if "selected" not in st.session_state:
-    st.session_state.selected = list(labels.keys())[0]
+    st.session_state.selected = options[0]
 
 selected = st.selectbox(
     "Inbox",
-    labels.keys(),
-    index=list(labels.keys()).index(st.session_state.selected)
-    if st.session_state.selected in labels else 0
+    options,
+    index=options.index(st.session_state.selected)
+    if st.session_state.selected in options else 0
 )
 
 st.session_state.selected = selected
-cid = labels[selected]
+cid = conv_lookup[selected]
 
 # ---------------- THREAD ----------------
 thread = get_conversation(cid)
 messages = thread.get("messages", [])
 
-# ---------------- NEW MESSAGE SOUND ----------------
+# ---------------- NEW MESSAGE SOUND (FIXED) ----------------
 if messages:
     last_fp = message_fingerprint(messages[-1])
-    if st.session_state.last_seen_msg.get(cid) != last_fp:
+
+    if (
+        st.session_state.last_seen_msg.get(cid) != last_fp
+        and last_fp not in st.session_state.alerted_fp
+    ):
         st.session_state.last_seen_msg[cid] = last_fp
+        st.session_state.alerted_fp.add(last_fp)
+
         st.markdown(
             """
             <audio autoplay>
