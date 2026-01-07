@@ -1,7 +1,6 @@
 import streamlit as st
 import requests
 from streamlit_autorefresh import st_autorefresh
-import hashlib
 
 API = "https://api.reverb.com/api"
 
@@ -11,18 +10,12 @@ st.set_page_config(page_title="Reverb Inbox", layout="wide")
 if "sending" not in st.session_state:
     st.session_state.sending = False
 
-if "last_seen_msg" not in st.session_state:
-    st.session_state.last_seen_msg = {}  # per conversation
-
-if "alerted_fp" not in st.session_state:
-    st.session_state.alerted_fp = set()  # global dedup
-
 # ---------------- AUTO REFRESH ----------------
 if not st.session_state.sending:
-    st_autorefresh(interval=2000, key="reverb_refresh")
+    st_autorefresh(interval=3000, key="reverb_refresh")
 
 # ---------------- UI ----------------
-st.title("📬 Reverb Messages")
+st.title("📬 Reverb Messages & Listings")
 
 token = st.text_input("Reverb API Token", type="password")
 if not token:
@@ -73,121 +66,126 @@ def get_sender_name(c):
         return other.get("username", "Unknown")
     return "Unknown"
 
-def message_fingerprint(m):
-    base = (
-        (m.get("created_at") or "") +
-        (m.get("sender_name") or "") +
-        (m.get("body") or "")
-    )
-    return hashlib.md5(base.encode()).hexdigest()
+def get_listings():
+    r = requests.get(f"{API}/my/listings", headers=HEADERS)
+    return r.json().get("listings", []) if r.ok else []
 
-# ---------------- SIDEBAR (NOTIFICATIONS) ----------------
+# ---------------- SIDEBAR ----------------
 st.sidebar.header("🔔 Notifications")
-
 for n in get_notifications():
     st.sidebar.info(f"{n.get('type', '').upper()}: {n.get('message', '')}")
 
-# ---------------- INBOX ----------------
-convs = get_conversations()
-if not convs:
-    st.info("No conversations found.")
-    st.stop()
+# ---------------- TABS ----------------
+tab_inbox, tab_listings = st.tabs(["📬 Inbox", "📊 My Listings"])
 
-options = []
-conv_lookup = {}
+# ===================== INBOX TAB =====================
+with tab_inbox:
+    convs = get_conversations()
+    if not convs:
+        st.info("No conversations found.")
+        st.stop()
 
-for c in convs:
-    if not isinstance(c, dict):
-        continue
+    options = []
+    conv_lookup = {}
 
-    cid = extract_conversation_id(c)
-    if not cid:
-        continue
+    for c in convs:
+        if not isinstance(c, dict):
+            continue
 
-    sender = get_sender_name(c)
-    listing = c.get("listing", {}).get("title", "General")
-    unread = "🔵" if c.get("unread") else "⚪"
-    preview = (c.get("last_message_preview") or "")[:80]
+        cid = extract_conversation_id(c)
+        if not cid:
+            continue
 
-    # UNIQUE LABEL (fixes collapsing issue)
-    label = f"[{cid}] {unread} {sender} — {preview}\n{listing}"
+        sender = get_sender_name(c)
+        listing = c.get("listing", {}).get("title", "General")
+        unread = "🔵" if c.get("unread") else "⚪"
+        preview = (c.get("last_message_preview") or "")[:80]
 
-    options.append(label)
-    conv_lookup[label] = cid
+        label = f"[{cid}] {unread} {sender} — {preview}\n{listing}"
 
-# Preserve selection
-if "selected" not in st.session_state:
-    st.session_state.selected = options[0]
+        options.append(label)
+        conv_lookup[label] = cid
 
-selected = st.selectbox(
-    "Inbox",
-    options,
-    index=options.index(st.session_state.selected)
-    if st.session_state.selected in options else 0
-)
+    if not options:
+        st.warning("No usable conversations.")
+        st.stop()
 
-st.session_state.selected = selected
-cid = conv_lookup[selected]
+    if "selected" not in st.session_state:
+        st.session_state.selected = options[0]
 
-# ---------------- THREAD ----------------
-thread = get_conversation(cid)
-messages = thread.get("messages", [])
-
-# ---------------- NEW MESSAGE SOUND (FIXED) ----------------
-if messages:
-    last_fp = message_fingerprint(messages[-1])
-
-    if (
-        st.session_state.last_seen_msg.get(cid) != last_fp
-        and last_fp not in st.session_state.alerted_fp
-    ):
-        st.session_state.last_seen_msg[cid] = last_fp
-        st.session_state.alerted_fp.add(last_fp)
-
-        st.markdown(
-            """
-            <audio autoplay>
-            <source src="https://actions.google.com/sounds/v1/cartoon/clang_and_wobble.ogg">
-            </audio>
-            """,
-            unsafe_allow_html=True
-        )
-
-# ---------------- LISTING IMAGE ----------------
-listing = thread.get("listing", {})
-photos = listing.get("photos", [])
-if photos:
-    st.image(photos[0]["_links"]["full"]["href"], width=220)
-
-# ---------------- BADGES ----------------
-if thread.get("order_id"):
-    st.success("📦 Order conversation")
-if thread.get("offer"):
-    st.warning("💰 Offer conversation")
-
-# ---------------- MESSAGES ----------------
-st.divider()
-for m in messages:
-    st.markdown(
-        f"""
-        **{m.get('sender_name', 'User')}**  
-        {m.get('body', '')}  
-        🕒 {m.get('created_at')}
-        """
+    selected = st.selectbox(
+        "Inbox",
+        options,
+        index=options.index(st.session_state.selected)
+        if st.session_state.selected in options else 0
     )
-    st.markdown("---")
 
-# ---------------- REPLY ----------------
-reply = st.text_area("Reply", key="reply")
+    st.session_state.selected = selected
+    cid = conv_lookup[selected]
 
-if st.button("Send", disabled=st.session_state.sending):
-    if reply.strip():
-        st.session_state.sending = True
-        if send_message(cid, reply):
-            st.session_state.reply = ""
-            st.success("Message sent")
+    thread = get_conversation(cid)
+    messages = thread.get("messages", [])
+
+    # Listing image
+    listing_data = thread.get("listing", {})
+    photos = listing_data.get("photos", [])
+    if photos:
+        st.image(photos[0]["_links"]["full"]["href"], width=220)
+
+    # Badges
+    if thread.get("order_id"):
+        st.success("📦 Order conversation")
+    if thread.get("offer"):
+        st.warning("💰 Offer conversation")
+
+    # Messages
+    st.divider()
+    for m in messages:
+        st.markdown(
+            f"""
+            **{m.get('sender_name', 'User')}**  
+            {m.get('body', '')}  
+            🕒 {m.get('created_at')}
+            """
+        )
+        st.markdown("---")
+
+    # Reply
+    reply = st.text_area("Reply", key="reply")
+
+    if st.button("Send", disabled=st.session_state.sending):
+        if reply.strip():
+            st.session_state.sending = True
+            if send_message(cid, reply):
+                st.session_state.reply = ""
+                st.success("Message sent")
+            else:
+                st.error("Failed to send")
+            st.session_state.sending = False
         else:
-            st.error("Failed to send")
-        st.session_state.sending = False
+            st.warning("Message cannot be empty")
+
+# ===================== LISTINGS TAB =====================
+with tab_listings:
+    st.subheader("📊 My Listings")
+
+    listings = get_listings()
+    if not listings:
+        st.info("No listings found.")
     else:
-        st.warning("Message cannot be empty")
+        rows = []
+        for l in listings:
+            rows.append({
+                "Title": l.get("title"),
+                "Price": f"{l.get('price', {}).get('amount', '')} {l.get('price', {}).get('currency', '')}",
+                "Views": l.get("views"),
+                "Watchers": l.get("watchers_count"),
+                "In Cart": l.get("in_cart_count"),
+                "State": l.get("state")
+            })
+
+        st.dataframe(
+            rows,
+            use_container_width=True,
+            hide_index=True
+        )
