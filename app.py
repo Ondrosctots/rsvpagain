@@ -70,6 +70,10 @@ def get_listings():
     r = requests.get(f"{API}/my/listings", headers=HEADERS)
     return r.json().get("listings", []) if r.ok else []
 
+def get_listing_details(listing_id):
+    r = requests.get(f"{API}/listings/{listing_id}", headers=HEADERS)
+    return r.json() if r.ok else {}
+
 # ---------------- SIDEBAR ----------------
 st.sidebar.header("🔔 Notifications")
 for n in get_notifications():
@@ -89,9 +93,6 @@ with tab_inbox:
     conv_lookup = {}
 
     for c in convs:
-        if not isinstance(c, dict):
-            continue
-
         cid = extract_conversation_id(c)
         if not cid:
             continue
@@ -102,43 +103,24 @@ with tab_inbox:
         preview = (c.get("last_message_preview") or "")[:80]
 
         label = f"[{cid}] {unread} {sender} — {preview}\n{listing}"
-
         options.append(label)
         conv_lookup[label] = cid
 
-    if not options:
-        st.warning("No usable conversations.")
-        st.stop()
-
-    if "selected" not in st.session_state:
-        st.session_state.selected = options[0]
-
-    selected = st.selectbox(
-        "Inbox",
-        options,
-        index=options.index(st.session_state.selected)
-        if st.session_state.selected in options else 0
-    )
-
-    st.session_state.selected = selected
+    selected = st.selectbox("Inbox", options)
     cid = conv_lookup[selected]
 
     thread = get_conversation(cid)
     messages = thread.get("messages", [])
 
-    # Listing image
-    listing_data = thread.get("listing", {})
-    photos = listing_data.get("photos", [])
+    photos = thread.get("listing", {}).get("photos", [])
     if photos:
         st.image(photos[0]["_links"]["full"]["href"], width=220)
 
-    # Badges
     if thread.get("order_id"):
         st.success("📦 Order conversation")
     if thread.get("offer"):
         st.warning("💰 Offer conversation")
 
-    # Messages
     st.divider()
     for m in messages:
         st.markdown(
@@ -150,9 +132,7 @@ with tab_inbox:
         )
         st.markdown("---")
 
-    # Reply
     reply = st.text_area("Reply", key="reply")
-
     if st.button("Send", disabled=st.session_state.sending):
         if reply.strip():
             st.session_state.sending = True
@@ -162,8 +142,6 @@ with tab_inbox:
             else:
                 st.error("Failed to send")
             st.session_state.sending = False
-        else:
-            st.warning("Message cannot be empty")
 
 # ===================== LISTINGS TAB =====================
 with tab_listings:
@@ -174,18 +152,18 @@ with tab_listings:
         st.info("No listings found.")
     else:
         rows = []
+
         for l in listings:
+            listing_id = l.get("id")
+            details = get_listing_details(listing_id) if listing_id else {}
+
             rows.append({
                 "Title": l.get("title"),
                 "Price": f"{l.get('price', {}).get('amount', '')} {l.get('price', {}).get('currency', '')}",
-                "Views": l.get("views"),
-                "Watchers": l.get("watchers_count"),
-                "In Cart": l.get("in_cart_count"),
+                "Views": details.get("views", 0),
+                "Watchers": details.get("watchers_count", 0),
+                "In Cart": details.get("in_cart_count", 0),
                 "State": l.get("state")
             })
 
-        st.dataframe(
-            rows,
-            use_container_width=True,
-            hide_index=True
-        )
+        st.dataframe(rows, use_container_width=True, hide_index=True)
