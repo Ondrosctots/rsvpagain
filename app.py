@@ -2,172 +2,129 @@ import streamlit as st
 import requests
 from streamlit_autorefresh import st_autorefresh
 
-API_BASE = "https://api.reverb.com/api"
+API = "https://api.reverb.com/api"
 
-st.set_page_config(page_title="Reverb Messages", layout="wide")
+st.set_page_config(page_title="Reverb Inbox", layout="wide")
+
+# ---------- SESSION FLAGS ----------
+if "sending" not in st.session_state:
+    st.session_state.sending = False
+if "last_seen" not in st.session_state:
+    st.session_state.last_seen = {}
+
+# ---------- AUTO REFRESH ----------
+if not st.session_state.sending:
+    st_autorefresh(interval=2000, key="refresh")  # safer than 1s
+
+# ---------- UI ----------
 st.title("📬 Reverb Messages")
 
-# 🔁 Auto refresh every 1 second
-st_autorefresh(interval=1000, key="reverb_refresh")
-
-# ---------------- TOKEN ----------------
-api_token = st.text_input("Enter your Reverb API Token", type="password")
-if not api_token:
+token = st.text_input("Reverb API Token", type="password")
+if not token:
     st.stop()
 
-headers = {
-    "Authorization": f"Bearer {api_token}",
+HEADERS = {
+    "Authorization": f"Bearer {token}",
     "Accept": "application/hal+json",
     "Accept-Version": "3.0"
 }
 
-# ---------------- API HELPERS ----------------
-def get_conversations(unread_only=False):
-    params = {"unread_only": "true"} if unread_only else {}
-    r = requests.get(f"{API_BASE}/my/conversations", headers=headers, params=params)
-    if r.status_code != 200:
-        return []
-    return r.json().get("conversations", [])
+# ---------- API ----------
+def get_conversations():
+    r = requests.get(f"{API}/my/conversations", headers=HEADERS)
+    return r.json().get("conversations", []) if r.ok else []
 
-def extract_conversation_id(c):
-    return (
-        c.get("id")
-        or c.get("conversation_id")
-        or c.get("_links", {})
-             .get("self", {})
-             .get("href", "")
-             .split("/")[-1]
-    )
+def get_thread(cid):
+    r = requests.get(f"{API}/my/conversations/{cid}", headers=HEADERS)
+    return r.json() if r.ok else {}
 
-def extract_listing_title(c):
-    listing = c.get("listing")
-    if isinstance(listing, dict):
-        return listing.get("title", "General conversation")
-    return "General conversation"
-
-def extract_sender_name(c):
-    if c.get("last_message_sender_name"):
-        return c["last_message_sender_name"]
-
-    other = c.get("other_user")
-    if isinstance(other, dict):
-        return other.get("username", "Unknown user")
-
-    buyer = c.get("buyer")
-    if isinstance(buyer, dict):
-        return buyer.get("username", "Unknown user")
-
-    seller = c.get("seller")
-    if isinstance(seller, dict):
-        return seller.get("username", "Unknown user")
-
-    return "Unknown user"
-
-def get_last_message_preview(c):
-    return c.get("last_message_preview") or ""
-
-def get_conversation(conv_id):
-    r = requests.get(f"{API_BASE}/my/conversations/{conv_id}", headers=headers)
-    if r.status_code != 200:
-        return {}
-    return r.json()
-
-def send_reply(conv_id, body):
-    r = requests.post(
-        f"{API_BASE}/my/conversations/{conv_id}/messages",
-        headers=headers,
+def send_message(cid, body):
+    return requests.post(
+        f"{API}/my/conversations/{cid}/messages",
+        headers=HEADERS,
         json={"body": body}
-    )
-    return r.status_code in (200, 201)
+    ).ok
 
-# ---------------- SIDEBAR ----------------
-st.sidebar.header("Inbox")
-unread_only = st.sidebar.checkbox("Unread only")
-search = st.sidebar.text_input("Search")
+def get_notifications():
+    r = requests.get(f"{API}/my/notifications", headers=HEADERS)
+    return r.json().get("notifications", []) if r.ok else []
 
-# ---------------- LOAD INBOX (AUTO) ----------------
-conversations = get_conversations(unread_only)
+# ---------- SIDEBAR ----------
+st.sidebar.header("🔔 Notifications")
 
-# ---------------- INBOX ----------------
-if conversations:
-    st.subheader("Conversations")
+for n in get_notifications():
+    st.sidebar.info(f"{n.get('type', '').upper()}: {n.get('message', '')}")
 
-    options = []
-    conv_lookup = {}
+# ---------- INBOX ----------
+convs = get_conversations()
+if not convs:
+    st.info("No conversations")
+    st.stop()
 
-    for c in conversations:
-        if not isinstance(c, dict):
-            continue
+labels = {}
+for c in convs:
+    cid = c["id"]
+    user = c.get("other_user", {}).get("username", "Unknown")
+    title = c.get("listing", {}).get("title", "General")
+    unread = "🔵" if c.get("unread") else "⚪"
+    labels[f"{unread} {user} — {title}"] = cid
 
-        conv_id = extract_conversation_id(c)
-        if not conv_id:
-            continue
+selected = st.selectbox("Inbox", labels.keys())
+cid = labels[selected]
 
-        sender = extract_sender_name(c)
-        preview = get_last_message_preview(c)[:120]
-        listing = extract_listing_title(c)
-        unread = c.get("unread", False)
+# ---------- THREAD ----------
+thread = get_thread(cid)
+messages = thread.get("messages", [])
 
-        label = (
-            f"{'🔵' if unread else '⚪'} "
-            f"{sender} — {preview}\n"
-            f"{listing}"
-        )
-
-        option = f"[{conv_id}] {label}"
-
-        if search.lower() in option.lower():
-            options.append(option)
-            conv_lookup[option] = conv_id
-
-    if not options:
-        st.info("No conversations found.")
-        st.stop()
-
-    # Preserve selection across refresh
-    if "selected_conv" not in st.session_state:
-        st.session_state.selected_conv = options[0]
-
-    selected = st.selectbox(
-        "Inbox",
-        options,
-        index=options.index(st.session_state.selected_conv)
-        if st.session_state.selected_conv in options else 0
+# ---------- NEW MESSAGE SOUND ----------
+last_id = messages[-1]["id"] if messages else None
+if st.session_state.last_seen.get(cid) != last_id:
+    st.session_state.last_seen[cid] = last_id
+    st.markdown(
+        """
+        <audio autoplay>
+        <source src="https://actions.google.com/sounds/v1/cartoon/clang_and_wobble.ogg">
+        </audio>
+        """,
+        unsafe_allow_html=True
     )
 
-    st.session_state.selected_conv = selected
-    selected_conv_id = conv_lookup[selected]
+# ---------- LISTING IMAGE ----------
+listing = thread.get("listing", {})
+photos = listing.get("photos", [])
+if photos:
+    st.image(photos[0]["_links"]["full"]["href"], width=200)
 
-    # ---------------- THREAD ----------------
-    thread = get_conversation(selected_conv_id)
-    messages = thread.get("messages", [])
+# ---------- ORDER / OFFER BADGE ----------
+if thread.get("order_id"):
+    st.success("📦 Order conversation")
+if thread.get("offer"):
+    st.warning("💰 Offer conversation")
 
-    st.divider()
-    st.subheader("Conversation")
+# ---------- MESSAGES ----------
+st.divider()
+for m in messages:
+    st.markdown(
+        f"""
+        **{m.get('sender_name', 'User')}**  
+        {m.get('body', '')}  
+        🕒 {m.get('created_at')}
+        """
+    )
+    st.markdown("---")
 
-    if isinstance(messages, list):
-        for m in messages:
-            st.markdown(
-                f"""
-                **{m.get('sender_name', 'Unknown')}**  
-                {m.get('body', '')}  
-                🕒 {m.get('created_at', '')}
-                """
-            )
-            st.markdown("---")
+# ---------- TYPING INDICATOR ----------
+st.caption("🟢 User may be typing..." if messages else "")
 
-    # ---------------- REPLY ----------------
-    reply = st.text_area("Reply", key="reply_box")
+# ---------- REPLY ----------
+reply = st.text_area("Reply", key="reply")
 
-    if st.button("Send"):
-        if reply.strip():
-            if send_reply(selected_conv_id, reply):
-                st.success("Message sent")
-                st.session_state.reply_box = ""
-            else:
-                st.error("Failed to send message")
+if st.button("Send", disabled=st.session_state.sending):
+    if reply.strip():
+        st.session_state.sending = True
+        if send_message(cid, reply):
+            st.session_state.reply = ""
+            st.success("Sent")
         else:
-            st.warning("Message cannot be empty")
-
-else:
-    st.info("No conversations yet.")
+            st.error("Failed")
+        st.session_state.sending = False
