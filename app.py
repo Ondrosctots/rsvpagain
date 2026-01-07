@@ -1,10 +1,14 @@
 import streamlit as st
 import requests
+from streamlit_autorefresh import st_autorefresh
 
 API_BASE = "https://api.reverb.com/api"
 
 st.set_page_config(page_title="Reverb Messages", layout="wide")
 st.title("📬 Reverb Messages")
+
+# 🔁 Auto refresh every 1 second
+st_autorefresh(interval=1000, key="reverb_refresh")
 
 # ---------------- TOKEN ----------------
 api_token = st.text_input("Enter your Reverb API Token", type="password")
@@ -22,7 +26,6 @@ def get_conversations(unread_only=False):
     params = {"unread_only": "true"} if unread_only else {}
     r = requests.get(f"{API_BASE}/my/conversations", headers=headers, params=params)
     if r.status_code != 200:
-        st.error("Failed to load conversations")
         return []
     return r.json().get("conversations", [])
 
@@ -43,16 +46,13 @@ def extract_listing_title(c):
     return "General conversation"
 
 def extract_sender_name(c):
-    # 1️⃣ Best case
     if c.get("last_message_sender_name"):
         return c["last_message_sender_name"]
 
-    # 2️⃣ Reverb-standard: other participant
     other = c.get("other_user")
     if isinstance(other, dict):
         return other.get("username", "Unknown user")
 
-    # 3️⃣ Fallbacks
     buyer = c.get("buyer")
     if isinstance(buyer, dict):
         return buyer.get("username", "Unknown user")
@@ -85,11 +85,8 @@ st.sidebar.header("Inbox")
 unread_only = st.sidebar.checkbox("Unread only")
 search = st.sidebar.text_input("Search")
 
-# ---------------- LOAD ----------------
-if st.button("Load Inbox"):
-    st.session_state["conversations"] = get_conversations(unread_only)
-
-conversations = st.session_state.get("conversations", [])
+# ---------------- LOAD INBOX (AUTO) ----------------
+conversations = get_conversations(unread_only)
 
 # ---------------- INBOX ----------------
 if conversations:
@@ -111,23 +108,34 @@ if conversations:
         listing = extract_listing_title(c)
         unread = c.get("unread", False)
 
-        display = (
+        label = (
             f"{'🔵' if unread else '⚪'} "
             f"{sender} — {preview}\n"
             f"{listing}"
         )
 
-        unique_option = f"[{conv_id}] {display}"
+        option = f"[{conv_id}] {label}"
 
-        if search.lower() in unique_option.lower():
-            options.append(unique_option)
-            conv_lookup[unique_option] = conv_id
+        if search.lower() in option.lower():
+            options.append(option)
+            conv_lookup[option] = conv_id
 
     if not options:
         st.info("No conversations found.")
         st.stop()
 
-    selected = st.selectbox("Inbox", options=options)
+    # Preserve selection across refresh
+    if "selected_conv" not in st.session_state:
+        st.session_state.selected_conv = options[0]
+
+    selected = st.selectbox(
+        "Inbox",
+        options,
+        index=options.index(st.session_state.selected_conv)
+        if st.session_state.selected_conv in options else 0
+    )
+
+    st.session_state.selected_conv = selected
     selected_conv_id = conv_lookup[selected]
 
     # ---------------- THREAD ----------------
@@ -137,10 +145,8 @@ if conversations:
     st.divider()
     st.subheader("Conversation")
 
-    if isinstance(messages, list) and messages:
+    if isinstance(messages, list):
         for m in messages:
-            if not isinstance(m, dict):
-                continue
             st.markdown(
                 f"""
                 **{m.get('sender_name', 'Unknown')}**  
@@ -149,20 +155,19 @@ if conversations:
                 """
             )
             st.markdown("---")
-    else:
-        st.info("No messages in this conversation.")
 
     # ---------------- REPLY ----------------
-    reply = st.text_area("Reply")
+    reply = st.text_area("Reply", key="reply_box")
 
     if st.button("Send"):
-        if not reply.strip():
-            st.warning("Message cannot be empty")
-        else:
+        if reply.strip():
             if send_reply(selected_conv_id, reply):
                 st.success("Message sent")
+                st.session_state.reply_box = ""
             else:
                 st.error("Failed to send message")
+        else:
+            st.warning("Message cannot be empty")
 
 else:
-    st.info("Click **Load Inbox** to fetch your messages.")
+    st.info("No conversations yet.")
