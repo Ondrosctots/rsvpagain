@@ -1,6 +1,7 @@
 import streamlit as st
 import requests
 from streamlit_autorefresh import st_autorefresh
+import hashlib
 
 API = "https://api.reverb.com/api"
 
@@ -43,9 +44,7 @@ def extract_conversation_id(c):
 
 def get_conversations():
     r = requests.get(f"{API}/my/conversations", headers=HEADERS)
-    if not r.ok:
-        return []
-    return r.json().get("conversations", [])
+    return r.json().get("conversations", []) if r.ok else []
 
 def get_conversation(cid):
     r = requests.get(f"{API}/my/conversations/{cid}", headers=HEADERS)
@@ -71,9 +70,16 @@ def get_sender_name(c):
         return other.get("username", "Unknown")
     return "Unknown"
 
-# ---------------- SIDEBAR (NOTIFICATIONS) ----------------
-st.sidebar.header("🔔 Notifications")
+def message_fingerprint(m):
+    base = (
+        (m.get("created_at") or "") +
+        (m.get("sender_name") or "") +
+        (m.get("body") or "")
+    )
+    return hashlib.md5(base.encode()).hexdigest()
 
+# ---------------- SIDEBAR ----------------
+st.sidebar.header("🔔 Notifications")
 for n in get_notifications():
     st.sidebar.info(f"{n.get('type', '').upper()}: {n.get('message', '')}")
 
@@ -90,15 +96,14 @@ for c in convs:
 
     cid = extract_conversation_id(c)
     if not cid:
-        continue  # skip broken objects safely
+        continue
 
     sender = get_sender_name(c)
     listing = c.get("listing", {}).get("title", "General")
     unread = "🔵" if c.get("unread") else "⚪"
     preview = (c.get("last_message_preview") or "")[:80]
 
-    label = f"{unread} {sender} — {preview}\n{listing}"
-    labels[label] = cid
+    labels[f"{unread} {sender} — {preview}\n{listing}"] = cid
 
 if not labels:
     st.warning("No usable conversations.")
@@ -123,17 +128,18 @@ thread = get_conversation(cid)
 messages = thread.get("messages", [])
 
 # ---------------- NEW MESSAGE SOUND ----------------
-last_msg_id = messages[-1]["id"] if messages else None
-if st.session_state.last_seen_msg.get(cid) != last_msg_id:
-    st.session_state.last_seen_msg[cid] = last_msg_id
-    st.markdown(
-        """
-        <audio autoplay>
-        <source src="https://actions.google.com/sounds/v1/cartoon/clang_and_wobble.ogg">
-        </audio>
-        """,
-        unsafe_allow_html=True
-    )
+if messages:
+    last_fp = message_fingerprint(messages[-1])
+    if st.session_state.last_seen_msg.get(cid) != last_fp:
+        st.session_state.last_seen_msg[cid] = last_fp
+        st.markdown(
+            """
+            <audio autoplay>
+            <source src="https://actions.google.com/sounds/v1/cartoon/clang_and_wobble.ogg">
+            </audio>
+            """,
+            unsafe_allow_html=True
+        )
 
 # ---------------- LISTING IMAGE ----------------
 listing = thread.get("listing", {})
