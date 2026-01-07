@@ -254,7 +254,15 @@ with tab_listings:
                             st.success("Deleted!")
                             st.cache_data.clear()
                 with col3:
-                    st.write("Photos:", [p["href"] for p in details.get("photos", [])])
+                    photos = details.get("photos", [])
+                    if photos:
+                        photo_urls = [p.get("_links", {}).get("full", {}).get("href", "N/A") for p in photos]
+                        st.write("Photos:", photo_urls)
+                        # Optionally display first image
+                        if photo_urls[0] != "N/A":
+                            st.image(photo_urls[0], width=220)
+                    else:
+                        st.write("No photos available.")
         
         # Create new listing
         with st.expander("➕ Create New Listing"):
